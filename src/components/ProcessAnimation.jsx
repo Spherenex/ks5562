@@ -27,10 +27,13 @@ const SAG = 0.34
 const WIRE_MID_Y = ATTACH_Y - SAG
 const FAULT_CENTER_Z = 0
 const CABINET_Z = 1.75
+const SOURCE_Z = 2.5
 const PULSES_PER_WIRE = 9
 const SPARK_COUNT = 260
 const ARC_POINTS = 18
 const RESTORE_SWEEP_S = 1.9
+const BATTERY_SCALE = 1.4
+const CHARGE_PARTICLES_PER_LEAD = 8
 const FLIGHT_MS = 1700
 const SHAKE_MS = 600
 const DRILL_DURATION_MS = 9000
@@ -278,9 +281,9 @@ function dashedLead(from, to, color) {
 
 // Battery bank feeding the line at Pole A, with + and − leads up to the conductors.
 function buildDcSource(steelMaterial) {
-  const x = NODE_X[0] - 0.75
+  const x = NODE_X[0] + 0.15
   const group = new THREE.Group()
-  group.position.set(x, 0, CABINET_Z)
+  group.position.set(x, 0, SOURCE_Z)
 
   const plinth = new THREE.Mesh(
     new THREE.BoxGeometry(0.95, 0.12, 0.5),
@@ -289,15 +292,32 @@ function buildDcSource(steelMaterial) {
   plinth.position.y = 0.06
   group.add(plinth)
 
+  // Glass cells with a glowing charge level inside, driven by the 2relay1 charging relay.
   const cellGeometry = new THREE.CylinderGeometry(0.11, 0.11, 0.5, 20)
   const capGeometry = new THREE.CylinderGeometry(0.112, 0.112, 0.08, 20)
-  const cellMaterial = new THREE.MeshStandardMaterial({ color: 0x2a3142, metalness: 0.4, roughness: 0.35 })
-  const chargeMaterial = new THREE.MeshBasicMaterial({ color: COLORS.good.clone(), toneMapped: false })
+  const coreHeight = 0.44
+  const coreGeometry = new THREE.CylinderGeometry(0.08, 0.08, coreHeight, 16)
+  coreGeometry.translate(0, coreHeight / 2, 0)
+  const cellMaterial = new THREE.MeshStandardMaterial({
+    color: 0x6b7a99,
+    metalness: 0.2,
+    roughness: 0.1,
+    transparent: true,
+    opacity: 0.28,
+    depthWrite: false,
+  })
+  const capMaterial = new THREE.MeshBasicMaterial({ color: COLORS.good.clone(), toneMapped: false })
+  const coreMaterial = new THREE.MeshBasicMaterial({ color: COLORS.good.clone(), toneMapped: false })
+  const cores = []
   ;[-0.28, 0, 0.28].forEach((cx) => {
+    const core = new THREE.Mesh(coreGeometry, coreMaterial)
+    core.position.set(cx, 0.15, 0)
+    group.add(core)
+    cores.push(core)
     const cell = new THREE.Mesh(cellGeometry, cellMaterial)
     cell.position.set(cx, 0.37, 0)
     group.add(cell)
-    const cap = new THREE.Mesh(capGeometry, chargeMaterial)
+    const cap = new THREE.Mesh(capGeometry, capMaterial)
     cap.position.set(cx, 0.58, 0)
     group.add(cap)
   })
@@ -309,29 +329,40 @@ function buildDcSource(steelMaterial) {
   negativeTerminal.position.set(-0.28, 0.66, 0)
   group.add(negativeTerminal)
 
-  const label = createLabelSprite('DC', { scale: 0.42, fontSize: 50 })
-  label.position.y = 1.05
-  group.add(label)
+  group.scale.setScalar(BATTERY_SCALE)
 
-  const positiveLead = dashedLead(
-    new THREE.Vector3(x + 0.28, 0.7, CABINET_Z),
+  // Leads run from the line at Pole A down to the battery terminals. While charging,
+  // current flows in along + (line → battery) and back out along − (battery → line).
+  const positivePath = [
     new THREE.Vector3(NODE_X[0], ATTACH_Y, POSITIVE_Z),
-    COLORS.good.clone(),
-  )
-  const negativeLead = dashedLead(
-    new THREE.Vector3(x - 0.28, 0.7, CABINET_Z),
+    new THREE.Vector3(x + 0.28 * BATTERY_SCALE, 0.7 * BATTERY_SCALE, SOURCE_Z),
+  ]
+  const negativePath = [
+    new THREE.Vector3(x - 0.28 * BATTERY_SCALE, 0.7 * BATTERY_SCALE, SOURCE_Z),
     new THREE.Vector3(NODE_X[0], ATTACH_Y, NEGATIVE_Z),
-    COLORS.dcReturn.clone(),
-  )
+  ]
+  const positiveLead = dashedLead(positivePath[0], positivePath[1], COLORS.good.clone())
+  const negativeLead = dashedLead(negativePath[0], negativePath[1], COLORS.dcReturn.clone())
 
-  return { group, chargeMaterial, leads: [positiveLead, negativeLead] }
+  return {
+    group,
+    capMaterial,
+    coreMaterial,
+    cores,
+    leads: [positiveLead, negativeLead],
+    chargePaths: [
+      { from: positivePath[0], to: positivePath[1], color: COLORS.good },
+      { from: negativePath[0], to: negativePath[1], color: COLORS.dcReturn },
+    ],
+    labelAnchor: new THREE.Vector3(x, 1.05 * BATTERY_SCALE, SOURCE_Z),
+  }
 }
 
 // DC load at Pole E — its lamp only lights while every span from A to E is energized.
 function buildDcLoad() {
-  const x = NODE_X[NODE_X.length - 1] + 0.75
+  const x = NODE_X[NODE_X.length - 1] - 0.15
   const group = new THREE.Group()
-  group.position.set(x, 0, CABINET_Z)
+  group.position.set(x, 0, SOURCE_Z)
 
   const body = new THREE.Mesh(
     new THREE.BoxGeometry(0.6, 0.5, 0.42),
@@ -351,12 +382,12 @@ function buildDcLoad() {
 
   const positiveLead = dashedLead(
     new THREE.Vector3(NODE_X[NODE_X.length - 1], ATTACH_Y, POSITIVE_Z),
-    new THREE.Vector3(x + 0.2, 0.5, CABINET_Z),
+    new THREE.Vector3(x + 0.2, 0.5, SOURCE_Z),
     COLORS.good.clone(),
   )
   const negativeLead = dashedLead(
     new THREE.Vector3(NODE_X[NODE_X.length - 1], ATTACH_Y, NEGATIVE_Z),
-    new THREE.Vector3(x - 0.2, 0.5, CABINET_Z),
+    new THREE.Vector3(x - 0.2, 0.5, SOURCE_Z),
     COLORS.dcReturn.clone(),
   )
 
@@ -409,9 +440,21 @@ function buildAriaLabel({ segments, voltage, currentRatio, isFault, faultSegment
   return `3D DC feeder animation. System ${systemStatus}. ${voltageText}, ${currentText}. Spans: ${segmentText}.${faultText}`
 }
 
-function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, faultSection, systemStatus }) {
+function ProcessAnimation({
+  segments,
+  voltage,
+  current,
+  currentRatio,
+  isFault,
+  faultSection,
+  systemStatus,
+  batteryCharging = null,
+  chargingTarget = null,
+  chargingWriteError = '',
+}) {
   const mountRef = useRef(null)
   const calloutRef = useRef(null)
+  const batteryCalloutRef = useRef(null)
   const stateRef = useRef({ segments: [], voltage: null, currentRatio: null, isFault: false, faultIndex: -1 })
   const drillCycleRef = useRef(0)
   const [drill, setDrill] = useState(null)
@@ -419,6 +462,26 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
   // A drill is a purely local, visual rehearsal of a fault on one span. It never
   // touches App state or the Firebase fault log, and a real fault always wins.
   const isDrill = drill !== null && !isFault
+  // The drill previews the fault behaviour (charging cut), but writes nothing to 2relay1.
+  const effectiveCharging = isDrill ? false : batteryCharging
+  const chargeStatus = (() => {
+    if (effectiveCharging === null) {
+      return { tone: 'unknown', title: 'Battery', detail: '2relay1 not reported' }
+    }
+    if (effectiveCharging) {
+      return { tone: 'on', title: 'Charging', detail: '2relay1 = 1' }
+    }
+    if (isFault || isDrill) {
+      return { tone: 'off', title: 'Not charging', detail: `Fault${isDrill ? ' (preview)' : ''} · 2relay1 = 0` }
+    }
+    if (chargingTarget && chargingWriteError) {
+      return { tone: 'off', title: 'Not charging', detail: 'Could not set 2relay1 = 1' }
+    }
+    if (chargingTarget) {
+      return { tone: 'pending', title: 'Not charging', detail: 'Switching on… 2relay1 → 1' }
+    }
+    return { tone: 'off', title: 'Not charging', detail: '2relay1 = 0' }
+  })()
   const baseSegments = segments || []
   const effectiveSegments = isDrill
     ? baseSegments.map((segment, index) => (index === drill.index ? { ...segment, isOpen: false } : segment))
@@ -444,6 +507,7 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
       currentRatio,
       isFault: effectiveIsFault,
       faultIndex: location.index,
+      batteryCharging: effectiveCharging,
     }
   })
 
@@ -642,6 +706,27 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
     const dcLoad = buildDcLoad()
     scene.add(dcSource.group, dcLoad.group)
     ;[...dcSource.leads, ...dcLoad.leads].forEach(({ line }) => scene.add(line))
+
+    const chargeCount = dcSource.chargePaths.length * CHARGE_PARTICLES_PER_LEAD
+    const chargePositions = new Float32Array(chargeCount * 3)
+    const chargeColors = new Float32Array(chargeCount * 3)
+    const chargeGeometry = new THREE.BufferGeometry()
+    chargeGeometry.setAttribute('position', new THREE.BufferAttribute(chargePositions, 3))
+    chargeGeometry.setAttribute('color', new THREE.BufferAttribute(chargeColors, 3))
+    const chargeParticles = new THREE.Points(
+      chargeGeometry,
+      new THREE.PointsMaterial({
+        size: 0.26,
+        map: glowTexture,
+        vertexColors: true,
+        transparent: true,
+        blending: THREE.AdditiveBlending,
+        depthWrite: false,
+        toneMapped: false,
+      }),
+    )
+    chargeParticles.frustumCulled = false
+    scene.add(chargeParticles)
 
     const pulseCount = segmentEntries.length * DC_POLES.length * PULSES_PER_WIRE
     const pulsePositions = new Float32Array(pulseCount * 3)
@@ -1049,9 +1134,55 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
       // --- DC source & load ---
       // Series feeder: the load at E is only supplied while every span from A is energized.
       const loadPowered = segmentEntries.every((_, index) => segmentStates[index]?.isOpen) && !state.isFault
-      dcSource.chargeMaterial.color
-        .copy(state.isFault ? COLORS.warning : COLORS.good)
-        .multiplyScalar(state.isFault ? 0.5 + blink : 1.2)
+      // Battery charging relay (2relay1): 1 → cells fill up in a repeating charge cycle,
+      // 0 → charging stopped, level frozen low and blinking red. null → field absent.
+      const charging = state.batteryCharging
+      dcSource.cores.forEach((core, index) => {
+        let level = 0.35
+        if (charging === true) {
+          level = prefersReducedMotion ? 0.8 : 0.2 + 0.8 * Math.min(1, ((time * 0.45 + index * 0.12) % 1.25) / 1)
+        }
+        core.scale.y = level
+      })
+      if (charging === true) {
+        dcSource.coreMaterial.color.copy(COLORS.good).multiplyScalar(1.3)
+        dcSource.capMaterial.color.copy(COLORS.good).multiplyScalar(1.2)
+      } else if (charging === false) {
+        dcSource.coreMaterial.color.copy(COLORS.critical).multiplyScalar(0.7)
+        dcSource.capMaterial.color.copy(COLORS.critical).multiplyScalar(0.4 + blink)
+      } else {
+        dcSource.coreMaterial.color.copy(COLORS.idle)
+        dcSource.capMaterial.color.copy(COLORS.idle)
+      }
+      dcSource.leads.forEach(({ material }, index) => {
+        material.color.copy(
+          charging === true ? dcSource.chargePaths[index].color : charging === false ? COLORS.critical : COLORS.idle,
+        )
+        material.opacity = charging === true ? 0.75 : 0.3
+      })
+      dcSource.chargePaths.forEach((path, pathIndex) => {
+        for (let i = 0; i < CHARGE_PARTICLES_PER_LEAD; i += 1) {
+          const k = pathIndex * CHARGE_PARTICLES_PER_LEAD + i
+          if (charging !== true) {
+            chargePositions[k * 3 + 1] = -50
+            chargeColors[k * 3] = 0
+            chargeColors[k * 3 + 1] = 0
+            chargeColors[k * 3 + 2] = 0
+            continue
+          }
+          const t = (time * (prefersReducedMotion ? 0.15 : 0.55) + i / CHARGE_PARTICLES_PER_LEAD) % 1
+          tmp.lerpVectors(path.from, path.to, t)
+          chargePositions[k * 3] = tmp.x
+          chargePositions[k * 3 + 1] = tmp.y
+          chargePositions[k * 3 + 2] = tmp.z
+          color.copy(path.color).multiplyScalar(1.5)
+          chargeColors[k * 3] = color.r
+          chargeColors[k * 3 + 1] = color.g
+          chargeColors[k * 3 + 2] = color.b
+        }
+      })
+      chargeGeometry.attributes.position.needsUpdate = true
+      chargeGeometry.attributes.color.needsUpdate = true
       dcLoad.bulbMaterial.color.copy(loadPowered ? COLORS.hot : COLORS.idle).multiplyScalar(loadPowered ? 1.6 : 0.6)
       dcLoad.bulb.scale.setScalar(loadPowered ? 1 : 0.85)
       dcLoad.leads.forEach(({ material }) => {
@@ -1171,6 +1302,18 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
         camera.position.sub(shakeOffset)
       }
 
+      // --- HTML callout anchored above the battery bank ---
+      const batteryCallout = batteryCalloutRef.current
+      if (batteryCallout) {
+        tmp.copy(dcSource.labelAnchor).project(camera)
+        const bx = (tmp.x * 0.5 + 0.5) * viewWidth
+        const by = (-tmp.y * 0.5 + 0.5) * viewHeight
+        // Clamp so the label never hangs off the edge of the canvas.
+        const clampedX = Math.min(Math.max(bx, 100), viewWidth - 100)
+        batteryCallout.style.transform = `translate3d(${clampedX.toFixed(1)}px, ${by.toFixed(1)}px, 0)`
+        batteryCallout.style.visibility = tmp.z < 1 && bx > -40 && bx < viewWidth + 40 ? 'visible' : 'hidden'
+      }
+
       // --- HTML callout anchored to the fault marker ---
       const callout = calloutRef.current
       if (callout) {
@@ -1240,9 +1383,17 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
         <div className="process-animation__vignette" aria-hidden="true" />
 
         <div className="feeder-hud" aria-hidden="true">
-          <span className={`feeder-hud__status feeder-hud__status--${statusTone}`}>
-            <span className="feeder-hud__dot" />
-            {statusText}
+          <span className="feeder-hud__stack">
+            <span className={`feeder-hud__status feeder-hud__status--${statusTone}`}>
+              <span className="feeder-hud__dot" />
+              {statusText}
+            </span>
+            <span className={`feeder-hud__charge feeder-hud__charge--${chargeStatus.tone}`}>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <path d="M13.5 2 4 13.5h6.5L9 22l10-12.5h-6.6L13.5 2Z" fill="currentColor" />
+              </svg>
+              Battery: {chargeStatus.title}
+            </span>
           </span>
           <span className="feeder-hud__readings">
             <span>
@@ -1252,6 +1403,18 @@ function ProcessAnimation({ segments, voltage, current, currentRatio, isFault, f
               <em>I DC</em> {typeof current === 'number' ? current.toFixed(3) : '—'} A
             </span>
           </span>
+        </div>
+
+        <div ref={batteryCalloutRef} className={`battery-callout battery-callout--${chargeStatus.tone}`}>
+          <div className="battery-callout__inner">
+            <span className="battery-callout__icon" aria-hidden="true">
+              <span className="battery-callout__fill" />
+            </span>
+            <span className="battery-callout__text">
+              <span className="battery-callout__title">{chargeStatus.title}</span>
+              <span className="battery-callout__detail">{chargeStatus.detail}</span>
+            </span>
+          </div>
         </div>
 
         <div ref={calloutRef} className={`fault-callout${faultSegment ? ' fault-callout--active' : ''}`} aria-hidden="true">

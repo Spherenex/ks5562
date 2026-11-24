@@ -14,6 +14,7 @@ import ReportActions from './components/ReportActions'
 import { buildFaultClearPatch, buildFaultStartRecord, computePoleStatuses, mergeFaultEvents } from './lib/faultEvents'
 import { fetchFaultHistory, patchFaultRecord, pushFaultStart } from './lib/faultLog'
 import { formatDelayMs } from './lib/format'
+import { CHARGING_RELAY_KEY, desiredChargingRelayValue, setChargingRelay } from './lib/chargingRelay'
 
 const DATABASE_ROOT = firebaseConfig.databaseURL.replace(/\/$/, '')
 const FAULT_SYSTEM_PATH = 'Grid_Fault_System'
@@ -90,9 +91,12 @@ function normalizeFaultTelemetry(payload) {
     typeof currentMagnitude === 'number' && openRelayCount > 0 ? currentMagnitude / openRelayCount : null
   const poleStatuses = computePoleStatuses(relayStates, NODE_LABELS)
   const phaseVoltages = extractPhaseVoltages(payload)
+  const chargingRaw = payload?.[CHARGING_RELAY_KEY]
+  const batteryCharging = chargingRaw === undefined || chargingRaw === null ? null : Number(chargingRaw) === 1
 
   return {
     autoRestore,
+    batteryCharging,
     currentMagnitude,
     currentPerOpenRelay,
     currentRatio,
@@ -120,6 +124,8 @@ function App() {
   const wasFaultRef = useRef(false)
   const lastClearTimeRef = useRef(null)
   const [recentlyRestored, setRecentlyRestored] = useState(false)
+  const chargingWriteRef = useRef(null)
+  const [chargingWriteError, setChargingWriteError] = useState('')
 
   useEffect(() => {
     let isActive = true
@@ -187,6 +193,35 @@ function App() {
         const sample = normalizeFaultTelemetry(payload)
         const timestamp = Date.now()
         const isFaultSample = sample.faultStatus === true || sample.systemStatus === 'FAULT'
+
+        // Battery charging relay: hold 2relay1 at 1 normally, drop it to 0 during a fault.
+        // Only write when the stored value differs, and never while the same write is in flight.
+        const desiredCharging = desiredChargingRelayValue(isFaultSample)
+        if (
+          payload &&
+          Number(payload[CHARGING_RELAY_KEY]) !== desiredCharging &&
+          chargingWriteRef.current !== desiredCharging
+        ) {
+          chargingWriteRef.current = desiredCharging
+          setChargingRelay(desiredCharging)
+            .then(() => {
+              if (!isActive) {
+                return
+              }
+              setChargingWriteError('')
+              setData((previous) => (previous ? { ...previous, [CHARGING_RELAY_KEY]: desiredCharging } : previous))
+            })
+            .catch((writeError) => {
+              if (isActive) {
+                setChargingWriteError(writeError instanceof Error ? writeError.message : 'Write failed')
+              }
+            })
+            .finally(() => {
+              if (chargingWriteRef.current === desiredCharging) {
+                chargingWriteRef.current = null
+              }
+            })
+        }
 
         setHistory((previous) =>
           [
@@ -367,6 +402,9 @@ function App() {
               }))}
               voltage={normalized?.voltage}
               current={normalized?.currentMagnitude}
+              batteryCharging={normalized?.batteryCharging ?? null}
+              chargingTarget={desiredChargingRelayValue(isFault) === 1}
+              chargingWriteError={chargingWriteError}
               currentRatio={normalized?.currentRatio}
               isFault={isFault}
               faultSection={normalized?.faultSection}
@@ -400,6 +438,22 @@ function App() {
                     label="Reclose Attempt"
                     value={normalized?.recloseAttempt ? 'In progress' : 'Idle'}
                     tone={normalized?.recloseAttempt ? 'warning' : 'good'}
+                  />
+                  <LedgerRow
+                    label={`Battery Charging (${CHARGING_RELAY_KEY})`}
+                    value={
+                      normalized?.batteryCharging === null
+                        ? '-'
+                        : normalized?.batteryCharging
+                          ? 'Charging (1)'
+                          : 'Not charging (0)'
+                    }
+                    tone={normalized?.batteryCharging === false ? 'critical' : 'good'}
+                    hint={
+                      chargingWriteError
+                        ? `${chargingWriteError} — check database write rules`
+                        : 'Set automatically: 1 in normal operation, 0 while a fault is active'
+                    }
                   />
                 </tbody>
               </table>
